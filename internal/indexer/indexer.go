@@ -504,8 +504,12 @@ func (i *Indexer) getDefinitionInfo(obj types.Object, ident *ast.Ident) *Definit
 // indexReferenceToDefinition emits data for the given reference object that is defined within
 // an index target package.
 func (i *Indexer) indexReferenceToDefinition(p *packages.Package, document *DocumentInfo, pos token.Position, definitionObj types.Object, d *DefinitionInfo) (uint64, bool) {
-	rangeID := i.ensureRangeFor(pos, definitionObj)
-	_ = i.emitter.EmitNext(rangeID, d.ResultSetID)
+	rangeID, ok := i.ensureRangeFor(pos, definitionObj)
+	if ok {
+		_ = i.emitter.EmitNext(rangeID, d.ResultSetID)
+	} else {
+		panic("Unsupported")
+	}
 
 	d.m.Lock()
 	d.ReferenceRangeIDs[document.DocumentID] = append(d.ReferenceRangeIDs[document.DocumentID], rangeID)
@@ -541,7 +545,7 @@ func (i *Indexer) indexReferenceToExternalDefinition(p *packages.Package, docume
 		return findExternalHoverContents(i.packageDataCache, i.packages, p, definitionObj)
 	})
 
-	rangeID := i.ensureRangeFor(pos, definitionObj)
+	rangeID, _ := i.ensureRangeFor(pos, definitionObj)
 	refResultID := i.emitter.EmitReferenceResult()
 	_ = i.emitter.EmitTextDocumentReferences(rangeID, refResultID)
 	_ = i.emitter.EmitItemOfReferences(refResultID, []uint64{rangeID}, document.DocumentID)
@@ -554,14 +558,16 @@ func (i *Indexer) indexReferenceToExternalDefinition(p *packages.Package, docume
 	return rangeID, true
 }
 
-// ensureRangeFor returns a range identifier for the given object. If a range for the object has
-// not been emitted, a new vertex is created.
-func (i *Indexer) ensureRangeFor(pos token.Position, obj types.Object) uint64 {
+// ensureRangeFor returns a range identifier for the given object. If a range for the
+// object has not been emitted, a new vertex is created. This method also returns a
+// boolean flag indicating whether or not a new range was emitted, and a false value
+// indicates that the range id was emitted in a previous stage.
+func (i *Indexer) ensureRangeFor(pos token.Position, obj types.Object) (uint64, bool) {
 	i.stripedMutex.RLockKey(pos.Filename)
 	rangeID, ok := i.ranges[pos.Filename][pos.Offset]
 	i.stripedMutex.RUnlockKey(pos.Filename)
 	if ok {
-		return rangeID
+		return rangeID, false
 	}
 
 	// Note: we calculate this outside of the critical section
@@ -571,12 +577,12 @@ func (i *Indexer) ensureRangeFor(pos token.Position, obj types.Object) uint64 {
 	defer i.stripedMutex.UnlockKey(pos.Filename)
 
 	if rangeID, ok := i.ranges[pos.Filename][pos.Offset]; ok {
-		return rangeID
+		return rangeID, false
 	}
 
 	rangeID = i.emitter.EmitRange(start, end)
 	i.ranges[pos.Filename][pos.Offset] = rangeID
-	return rangeID
+	return rangeID, true
 }
 
 // linkReferenceResultsToRanges emits item relations for each indexed definition result value.
